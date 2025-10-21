@@ -10,6 +10,8 @@
 #include <imgui.h>
 #include <vulkan/vulkan_core.h>
 
+#define M_PI 3.1415926535897932384626433832795
+
 namespace {
 
 constexpr float camera_fov = 70.0f;
@@ -26,6 +28,7 @@ struct Vector {
 
 struct Vertex {
 	Vector position;
+	//Vector color;
 	// NOTE: You can add more attributes
 };
 
@@ -47,13 +50,32 @@ VkPipelineLayout pipeline_layout;
 VkPipeline pipeline;
 
 // NOTE: Declare buffers and other variables here
-VulkanBuffer vertex_buffer;
-VulkanBuffer index_buffer;
+VulkanBuffer cube_vertex_buffer;
+VulkanBuffer cube_index_buffer;
 
-Vector model_position = {0.0f, 0.0f, 5.0f};
-float model_rotation;
-Vector model_color = {0.5f, 1.0f, 0.7f };
-bool model_spin = true;
+VulkanBuffer vertex_sphere_buffer;
+VulkanBuffer index_sphere_buffer;
+
+Vector cube_position = {0.0f, 0.0f, 0.0f};
+float cube_rotation;
+Vector cube_color = {0.5f, 1.0f, 0.7f };
+bool cube_spin = false;
+
+Vector sphere_position = { 0.0f, 0.0f, 5.0f };
+float sphere_rotation;
+Vector sphere_color = { 1.0f, 0.7f, 0.4f };
+bool sphere_spin = true;
+
+// Sphere variables
+const uint32_t n = 30; // Number of longituded and latitudes
+const uint32_t num_of_triangles = (2 * n + 2 * n * (n - 1));
+
+Vertex vertices_sphere[n * n + 2];
+uint32_t indices_sphere[3 * num_of_triangles];
+
+float phi, theta; // Spherical coordinates
+float R = 1.2f;
+Vertex sphere_vert;
 
 Matrix identity() {
 	Matrix result{};
@@ -135,6 +157,8 @@ Matrix multiply(const Matrix& a, const Matrix& b) {
 
 	return result;
 }
+
+Matrix camera_position = translation({ 0.0f, 2.0f, 10.0f });
 
 // NOTE: Loads shader byte code from file
 // NOTE: Your shaders are compiled via CMake with this code too, look it up
@@ -251,9 +275,19 @@ VulkanBuffer createBuffer(size_t size, void *data, VkBufferUsageFlags usage) {
 
 void destroyBuffer(const VulkanBuffer& buffer) {
 	VkDevice& device = veekay::app.vk_device;
-
 	vkFreeMemory(device, buffer.memory, nullptr);
 	vkDestroyBuffer(device, buffer.buffer, nullptr);
+}
+
+// Modified remain (костыль)
+uint32_t r(const uint32_t x, const uint32_t n) {
+	if (x == n * n) { 
+		return x; 
+	}
+	else { 
+		return (x % (n * n)); 
+	}
+	return 0;
 }
 
 void initialize() {
@@ -309,14 +343,12 @@ void initialize() {
 				.offset = offsetof(Vertex, position), // NOTE: Offset of "position" field in a Vertex struct
 			},
 			// NOTE: If you want more attributes per vertex, declare them here
-#if 0
-			{
+			/*{
 				.location = 1, // NOTE: Second attribute
 				.binding = 0,
-				.format = VK_FORMAT_XXX,
-				.offset = offset(Vertex, your_attribute),
-			},
-#endif
+				.format = VK_FORMAT_R32G32B32_SFLOAT,
+				.offset = offsetof(Vertex, color),
+			}, */
 		};
 
 		// NOTE: Bring 
@@ -452,7 +484,7 @@ void initialize() {
 		}
 	}
 
-	// TODO: You define model vertices and create buffers here
+	// TODO: You define cube vertices and create buffers here
 	// TODO: Index buffer has to be created here too
 	// NOTE: Look for createBuffer function
 
@@ -461,28 +493,97 @@ void initialize() {
 	//  |   `--,   |
 	//  |       \  |
 	// (v3)------(v2)
-	Vertex vertices[] = {
+	
+	Vertex cube_vertices[] = {
 		{{-1.0f, -1.0f, 0.0f}},
 		{{1.0f, -1.0f, 0.0f}},
 		{{1.0f, 1.0f, 0.0f}},
 		{{-1.0f, 1.0f, 0.0f}},
+		{{-1.0f, -1.0f, 2.0f}},
+		{{1.0f, -1.0f, 2.0f}},
+		{{1.0f, 1.0f, 2.0f}},
+		{{-1.0f, 1.0f, 2.0f}},
 	};
 
-	uint32_t indices[] = { 0, 1, 2, 2, 3, 0 };
+	uint32_t cube_indices[] = 
+	{ 0, 1, 2, 2, 3, 0, 
+		4, 5, 1, 1, 0, 4, 
+		4, 0, 3, 3, 7, 4, 
+		1, 5, 6, 6, 2, 1, 
+		3, 2, 6, 6, 7, 3, 
+		7, 6, 5, 5, 4, 7, 
+	};
 
-	vertex_buffer = createBuffer(sizeof(vertices), vertices,
+	cube_vertex_buffer = createBuffer(sizeof(cube_vertices), cube_vertices,
 	                             VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
 
-	index_buffer = createBuffer(sizeof(indices), indices,
+	cube_index_buffer = createBuffer(sizeof(cube_indices), cube_indices,
 	                            VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
+
+	// SPHERE CREATION
+	// Adding vertices to vertices_sphere;
+	for (uint32_t phi_i = 0; phi_i <= n - 1; phi_i++) { // Defines the "layer lvl"
+		phi = phi_i * 2 * M_PI / n;
+		for (uint32_t theta_i = 1; theta_i <= n; theta_i++) {
+			theta = (-M_PI / 2) + theta_i * M_PI / (n + 1);
+			sphere_vert.position = { R * cos(theta) * cos(phi), R * cos(theta) * sin(phi), R * sin(theta) };
+			vertices_sphere[theta_i + n * phi_i] = sphere_vert;
+		}
+	}
+	// Add South and North pole
+	Vertex South_pole = { { 0, 0, -R } };
+	Vertex North_pole = { { 0, 0, R } };
+	vertices_sphere[0] = South_pole;
+	vertices_sphere[n * n + 1] = North_pole;
+
+	// Adding triangles to indices_sphere
+	uint32_t trangles_vert_added = 0;
+	// Pt1: South Pole connected to the first (lowerest) layer. So we add n trangles and their n insides
+	for (uint32_t i = 0; i <= n - 1; i++) {
+		indices_sphere[trangles_vert_added] = 1 + n * i;
+		indices_sphere[trangles_vert_added + 1] = r(1 + n * i + n, n);
+		indices_sphere[trangles_vert_added + 2] = 0;
+		trangles_vert_added += 3;
+	}
+
+	// Pt2: k layer connected to the (k-1) layer. So at each layer we add 2n triangles. 
+	// And we have n - 1 layer. So 2n(n-1) trangle 
+	for (uint32_t k = 2; k <= n; k++) {		
+		for (uint32_t j = 1; j <= n; j++) {
+			indices_sphere[trangles_vert_added] = k + n * (j - 1);
+			indices_sphere[trangles_vert_added + 1] = r(k + n * j, n);
+			indices_sphere[trangles_vert_added + 2] = r(k + n * j, n) - 1;
+			indices_sphere[trangles_vert_added + 3] = r(k + n * j, n) - 1;
+			indices_sphere[trangles_vert_added + 4] = k - n + n * j - 1;
+			indices_sphere[trangles_vert_added + 5] = k + n * j - n;
+			trangles_vert_added += 6;
+		}
+	}
+
+	// Pt3: North Pole connected to the n_th layer. So we add n trangles and their n insides. Same as the South pole
+	for (uint32_t i = 1; i <= n; i++) {
+		indices_sphere[trangles_vert_added] = n * n + 1;
+		indices_sphere[trangles_vert_added + 1] = r(n * (i + 1), n);
+		indices_sphere[trangles_vert_added + 2] = n * i;
+		trangles_vert_added += 3;
+	}
+
+	vertex_sphere_buffer = createBuffer(sizeof(vertices_sphere), vertices_sphere,
+		VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+
+	index_sphere_buffer = createBuffer(sizeof(indices_sphere), indices_sphere,
+		VK_BUFFER_USAGE_INDEX_BUFFER_BIT); 
 }
 
 void shutdown() {
 	VkDevice& device = veekay::app.vk_device;
 
 	// NOTE: Destroy resources here, do not cause leaks in your program!
-	destroyBuffer(index_buffer);
-	destroyBuffer(vertex_buffer);
+	destroyBuffer(cube_index_buffer);
+	destroyBuffer(cube_vertex_buffer);
+
+	destroyBuffer(index_sphere_buffer);
+	destroyBuffer(vertex_sphere_buffer);
 
 	vkDestroyPipeline(device, pipeline, nullptr);
 	vkDestroyPipelineLayout(device, pipeline_layout, nullptr);
@@ -492,18 +593,26 @@ void shutdown() {
 
 void update(double time) {
 	ImGui::Begin("Controls:");
-	ImGui::InputFloat3("Translation", reinterpret_cast<float*>(&model_position));
-	ImGui::SliderFloat("Rotation", &model_rotation, 0.0f, 2.0f * M_PI);
-	ImGui::Checkbox("Spin?", &model_spin);
+	/*ImGui::InputFloat3("Translation", reinterpret_cast<float*>(&cube_position));
+	ImGui::SliderFloat("Rotation", &cube_rotation, 0.0f, 2.0f * M_PI); */
+	ImGui::InputFloat3("Translation", reinterpret_cast<float*>(&sphere_position));
+	ImGui::SliderFloat("Rotation", &sphere_rotation, 0.0f, 2.0f * M_PI);
+	ImGui::Checkbox("Spin?", &cube_spin);
 	// TODO: Your GUI stuff here
 	ImGui::End();
 
 	// NOTE: Animation code and other runtime variable updates go here
-	if (model_spin) {
-		model_rotation = float(time);
+	if (cube_spin) {
+		cube_rotation = float(time);
 	}
 
-	model_rotation = fmodf(model_rotation, 2.0f * M_PI);
+	cube_rotation = fmodf(cube_rotation, 2.0f * M_PI);
+
+	if (sphere_spin) {
+		sphere_rotation = float(time);
+	}
+
+	sphere_rotation = fmodf(sphere_rotation, 2.0f * M_PI);
 }
 
 void render(VkCommandBuffer cmd, VkFramebuffer framebuffer) {
@@ -547,34 +656,59 @@ void render(VkCommandBuffer cmd, VkFramebuffer framebuffer) {
 		// NOTE: Use our new shiny graphics pipeline
 		vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
 
-
 		// NOTE: Use our quad vertex buffer
 		VkDeviceSize offset = 0;
-		vkCmdBindVertexBuffers(cmd, 0, 1, &vertex_buffer.buffer, &offset);
+		vkCmdBindVertexBuffers(cmd, 0, 1, &cube_vertex_buffer.buffer, &offset);
 
 		// NOTE: Use our quad index buffer
-		vkCmdBindIndexBuffer(cmd, index_buffer.buffer, offset, VK_INDEX_TYPE_UINT32);
+		vkCmdBindIndexBuffer(cmd, cube_index_buffer.buffer, offset, VK_INDEX_TYPE_UINT32);
 
-		// NOTE: Variables like model_XXX were declared globally
-		ShaderConstants constants{
+		// NOTE: Variables like cube_XXX were declared globally
+		ShaderConstants cube_constants{
 			.projection = projection(
 				camera_fov,
 				float(veekay::app.window_width) / float(veekay::app.window_height),
 				camera_near_plane, camera_far_plane),
 
-			.transform = multiply(rotation({0.0f, 1.0f, 0.0f}, model_rotation),
-			                      translation(model_position)),
+			.transform = multiply(multiply(rotation({0.0f, 1.0f, 0.0f}, cube_rotation),
+			                      translation(cube_position)), camera_position),
 
-			.color = model_color,
+			//.color = cube_color,
+			.color = {0.0f, 1.0f, 0.1f},
 		};
 
 		// NOTE: Update constant memory with new shader constants
 		vkCmdPushConstants(cmd, pipeline_layout,
 		                   VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-		                   0, sizeof(ShaderConstants), &constants);
+		                   0, sizeof(ShaderConstants), &cube_constants);
 
-		// NOTE: Draw 6 indices (3 vertices * 2 triangles), 1 group, no offsets
-		vkCmdDrawIndexed(cmd, 6, 1, 0, 0, 0);
+		// NOTE: Draw 3N indices (3 vertices * N triangles), 1 group, no offsets
+		vkCmdDrawIndexed(cmd, 36, 1, 0, 0, 0);
+
+		// SPHERE
+		vkCmdBindVertexBuffers(cmd, 0, 1, &vertex_sphere_buffer.buffer, &offset);
+		vkCmdBindIndexBuffer(cmd, index_sphere_buffer.buffer, offset, VK_INDEX_TYPE_UINT32);
+
+		// NOTE: Variables like cube_XXX were declared globally
+		ShaderConstants sphere_constants{
+			.projection = projection(
+				camera_fov,
+				float(veekay::app.window_width) / float(veekay::app.window_height),
+				camera_near_plane, camera_far_plane),
+
+			.transform = multiply(multiply(translation(sphere_position), 
+				rotation({0.0f, 1.0f, 0.0f}, sphere_rotation)), camera_position),
+
+				.color = {1.0f, 0.0f, 0.5f},
+		};
+
+		// NOTE: Update constant memory with new shader constants
+		vkCmdPushConstants(cmd, pipeline_layout,
+			VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+			0, sizeof(ShaderConstants), &sphere_constants);
+
+		// NOTE: Draw 3N indices (3 vertices * N triangles), 1 group, no offsets
+		vkCmdDrawIndexed(cmd, 3 * num_of_triangles, 1, 0, 0, 0); 
 	}
 
 	vkCmdEndRenderPass(cmd);
